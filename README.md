@@ -140,6 +140,7 @@ to the model, and is stripped out of error text.
 | `uskan_build_status`           | free    | Status and log of a build started with `uskan_build`.                  |
 | `uskan_upload_store_image`     | free    | Uploads a screenshot / feature graphic / icon, size-checked per store. |
 | `uskan_file_data_safety`       | free    | Files the Play Data safety declaration with Google directly.           |
+| `uskan_submit_ios_review`      | free    | Attaches the processed build and sends the iOS version to App Review.  |
 | `uskan_check_submission`       | free    | Asks the store where a submission stands in review.                    |
 
 Each tool's description is written for the agent, telling it which repo files to read
@@ -158,6 +159,7 @@ uskan_status
             ├─ uskan_file_data_safety  (after you approve the summary)
             ├─ uskan_upload_store_image (icon, feature graphic, screenshots)
             ├─ uskan_publish     (android: internal track by default)
+            ├─ uskan_submit_ios_review (ios, after Apple finishes processing)
             └─ uskan_check_submission  (where the review stands)
 ```
 

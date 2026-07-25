@@ -102,7 +102,7 @@ const stackEnum = z.enum(["expo", "rn", "flutter", "gradle", "native"]);
  * ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "uskan-mcp", version: "0.2.0" },
+  { name: "uskan-mcp", version: "0.3.0" },
   {
     capabilities: { tools: {} },
     instructions: [
@@ -126,7 +126,8 @@ const server = new McpServer(
       "  6. uskan_prepare_questionnaires — Data safety + content rating drafts",
       "  3b. uskan_build             — instead of 3, when a GitHub repo is connected",
       "  7. uskan_publish              — push the artifact to the store track",
-      "  8. uskan_check_submission     — where the review stands, when the user asks",
+      "  8. uskan_submit_ios_review    — iOS only, once Apple finishes processing",
+      "  9. uskan_check_submission     — where the review stands, when the user asks",
       "",
       "Store images: uskan_upload_store_image puts an existing PNG/JPEG into the",
       "right store slot and validates its pixel size. If the user has no artwork,",
@@ -824,7 +825,7 @@ server.registerTool(
           `Submitted to ${platform} / ${resolvedTrack}.`,
           platform === "android"
             ? "The release lands as a DRAFT on that track — the user still has to review and roll it out in Play Console."
-            : "The build now goes through Apple's processing (10-60 min) before it is usable in TestFlight or submittable for review.",
+            : "The build now goes through Apple's processing (10-60 min). Your listing text and screenshots were written at the same time. When processing finishes, call uskan_submit_ios_review to send it to review.",
           "Track progress on the uskan dashboard and in the store console.",
         ].join("\n"),
       );
@@ -1149,6 +1150,122 @@ server.registerTool(
             ? "The store rejected it. The response below carries the store's reason; relay that to the user verbatim."
             : `Status: ${status}. Reviews take the store's own time; do not poll repeatedly.`;
       return ok(data, note);
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 13. uskan_submit_ios_review
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_submit_ios_review",
+  {
+    title: "uskan: submit the iOS version to App Review",
+    description: [
+      "The last iOS step. uskan_publish delivers the .ipa and writes the listing,",
+      "but Apple processes every build asynchronously (10-60 minutes) and a version",
+      "can only be submitted once that finishes. This attaches the processed build",
+      "to the version and sends it to review.",
+      "",
+      "Safe to call early: if Apple is still processing, it returns pending:true,",
+      "changes nothing, and you try again later. Do not loop on it — tell the user",
+      "the wait and check when they ask.",
+      "",
+      "Apple REQUIRES a review contact. If any part of the app is behind a login,",
+      "you MUST also pass a working test account: a reviewer who cannot reach the",
+      "main screens rejects the app for incomplete information, and that is the",
+      "single most common avoidable rejection. Ask the user for both rather than",
+      "inventing values.",
+      "",
+      "uskan does not and cannot guarantee approval: that depends entirely on the",
+      "app's own design and content against Apple's review guidelines.",
+    ].join("\n"),
+    inputSchema: {
+      projectId: z.string().trim().min(1).describe("uskan project id."),
+      firstName: z.string().trim().min(1).max(64).describe("Review contact first name."),
+      lastName: z.string().trim().min(1).max(64).describe("Review contact last name."),
+      phone: z.string().trim().min(3).max(32).describe("Review contact phone, with country code."),
+      email: z.string().trim().email().describe("Review contact email."),
+      demoAccountName: z
+        .string()
+        .trim()
+        .max(255)
+        .optional()
+        .describe("Test account username, REQUIRED if any screen needs a login."),
+      demoAccountPassword: z
+        .string()
+        .trim()
+        .max(255)
+        .optional()
+        .describe("Test account password, REQUIRED if any screen needs a login."),
+      notes: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Notes for the reviewer: what a non-obvious feature does, why a permission is needed, how to reach a screen.",
+        ),
+      buildNumber: z
+        .string()
+        .trim()
+        .max(32)
+        .optional()
+        .describe("Which build to submit. Defaults to the last one uskan delivered."),
+      submit: z
+        .boolean()
+        .optional()
+        .describe("false to attach the build without sending it to review. Defaults to true."),
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  async ({
+    projectId,
+    firstName,
+    lastName,
+    phone,
+    email,
+    demoAccountName,
+    demoAccountPassword,
+    notes,
+    buildNumber,
+    submit,
+  }) =>
+    guard(async () => {
+      if (Boolean(demoAccountName) !== Boolean(demoAccountPassword)) {
+        return fail(
+          new UskanError(
+            "A reviewer test account needs both a username and a password. Ask the " +
+              "user for the missing half, or omit both if the app has no login.",
+            400,
+          ),
+        );
+      }
+
+      const data = await request<Record<string, unknown>>("/api/publish/ios/submit", {
+        method: "POST",
+        body: {
+          projectId,
+          buildNumber,
+          submit,
+          reviewContact: {
+            firstName,
+            lastName,
+            phone,
+            email,
+            demoAccountName,
+            demoAccountPassword,
+            notes,
+          },
+        },
+      });
+
+      const note = data.pending
+        ? "Apple is still processing the build. Nothing was changed — check again in a while."
+        : data.submitted
+          ? "Submitted to App Review. Apple typically answers within 24-48 hours."
+          : "The build is attached to the version but was not sent to review.";
+
+      return ok({ ...data, review: links(projectId) }, note);
     }),
 );
 
