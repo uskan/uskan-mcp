@@ -102,7 +102,7 @@ const stackEnum = z.enum(["expo", "rn", "flutter", "gradle", "native"]);
  * ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "uskan-mcp", version: "0.3.0" },
+  { name: "uskan-mcp", version: "0.3.1" },
   {
     capabilities: { tools: {} },
     instructions: [
@@ -1177,6 +1177,15 @@ server.registerTool(
       "single most common avoidable rejection. Ask the user for both rather than",
       "inventing values.",
       "",
+      "IN-APP PURCHASES: uskan sends any unreviewed in-app purchases and",
+      "subscriptions to review together with the version. This matters more than it",
+      "sounds — a product left in READY_TO_SUBMIT means the app ships, the paywall",
+      "opens, and every purchase silently fails. The result carries",
+      "inAppPurchases.stillUnreviewed; if that list is not empty, TELL THE USER the",
+      "product ids by name and that those purchases will not work until they are",
+      "fixed in App Store Connect (usually a missing price, localization or review",
+      "screenshot). Do not bury it.",
+      "",
       "uskan does not and cannot guarantee approval: that depends entirely on the",
       "app's own design and content against Apple's review guidelines.",
     ].join("\n"),
@@ -1259,11 +1268,27 @@ server.registerTool(
         },
       });
 
-      const note = data.pending
-        ? "Apple is still processing the build. Nothing was changed — check again in a while."
-        : data.submitted
-          ? "Submitted to App Review. Apple typically answers within 24-48 hours."
-          : "The build is attached to the version but was not sent to review.";
+      const iap = data.inAppPurchases as
+        | { submittedWithApp?: string[]; stillUnreviewed?: string[] }
+        | undefined;
+      const lines: string[] = [];
+      if (data.pending) {
+        lines.push("Apple is still processing the build. Nothing was changed — check again in a while.");
+      } else if (data.submitted) {
+        lines.push("Submitted to App Review. Apple typically answers within 24-48 hours.");
+        if (iap?.submittedWithApp?.length) {
+          lines.push(`In-app purchases sent with it: ${iap.submittedWithApp.join(", ")}.`);
+        }
+      } else {
+        lines.push("The build is attached to the version but was not sent to review.");
+      }
+      if (iap?.stillUnreviewed?.length) {
+        lines.push(
+          `WARNING — these purchases were NOT reviewed and will fail in production: ${iap.stillUnreviewed.join(", ")}. ` +
+            "Report this to the user before anything else.",
+        );
+      }
+      const note = lines.join("\n");
 
       return ok({ ...data, review: links(projectId) }, note);
     }),
