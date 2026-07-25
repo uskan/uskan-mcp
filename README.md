@@ -212,3 +212,19 @@ Source lives in `src/` (TypeScript, ESM); the published entry point is `dist/ind
 ## License
 
 MIT
+
+### Steps that happen in a browser
+
+Creating the app record, getting store credentials and Apple's App Privacy
+answers all live behind Apple's and Google's own login, so no MCP server can do
+them. When a call fails for one of those reasons, uskan-mcp returns a `guides`
+object with links already scoped to your project, and the agent hands you the
+right one:
+
+| Link | What you do there |
+|------|-------------------|
+| `iosApiKey` | Create the App Store Connect key, with the Key ID / Issuer ID trap explained |
+| `androidServiceAccount` | Create the Play service account **and** invite it into Play Console |
+| `iosAppRecord` / `androidAppRecord` | The one-time app entry neither store exposes over an API |
+| `iosSubmitReview` | Send the finished iOS version to App Review |
+

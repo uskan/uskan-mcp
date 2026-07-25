@@ -65,6 +65,28 @@ function links(projectId: string) {
   };
 }
 
+/**
+ * Deep links to the guided walkthroughs, already scoped to this project.
+ *
+ * Some steps cannot be done from an editor at all: they happen in Apple's or
+ * Google's console, behind their login. When a call fails for one of those
+ * reasons, the useful thing is not an apology but the exact page that explains
+ * the clicks — with the user's own package name and app name already filled in.
+ */
+function guides(projectId: string) {
+  const base = `${baseUrl().replace(/\/$/, "")}/dashboard/projects/${projectId}/publish`;
+  return {
+    /** Creating the app record by hand, once per app. Neither store has an API for it. */
+    iosAppRecord: `${base}/ios/app-record`,
+    androidAppRecord: `${base}/android/app-record`,
+    /** Getting the store credentials, with the Key ID / Issuer ID trap spelled out. */
+    iosApiKey: `${base}/ios/api-key`,
+    androidServiceAccount: `${base}/android/service-account`,
+    /** Sending the finished iOS version to App Review. */
+    iosSubmitReview: `${base}/ios/review`,
+  };
+}
+
 /** Failure result. Tools return errors as content so the agent can read + recover. */
 function fail(err: unknown): ToolResult {
   const message =
@@ -102,7 +124,7 @@ const stackEnum = z.enum(["expo", "rn", "flutter", "gradle", "native"]);
  * ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "uskan-mcp", version: "0.3.1" },
+  { name: "uskan-mcp", version: "0.4.0" },
   {
     capabilities: { tools: {} },
     instructions: [
@@ -134,6 +156,13 @@ const server = new McpServer(
       "point them at the screenshot studio link rather than trying to make one.",
       "Play Data safety: uskan_file_data_safety sends the declaration to Google",
       "directly, after the user has approved the summary.",
+      "",
+      "SOME STEPS CANNOT BE DONE FROM HERE, and that is not a failure. Creating the",
+      "app record, getting store credentials, Apple's App Privacy answers and",
+      "arranging screenshots all happen in a browser behind the user's own login.",
+      "When a tool returns a `guides` object, give the user the matching URL as a",
+      "clickable link and say in one sentence what they will do there. Do not try to",
+      "work around these steps, and do not make the user hunt for the page.",
       "",
       "AI steps cost credits. Do not call them speculatively or in a retry loop.",
       "Always show generated store copy and questionnaire answers to the user for",
@@ -816,11 +845,50 @@ server.registerTool(
         body.channel = resolvedTrack === "appstore" ? "appstore" : "testflight";
       }
 
-      const data = await request("/api/publish", { method: "POST", body });
+      let data: unknown;
+      try {
+        data = await request("/api/publish", { method: "POST", body });
+      } catch (err) {
+        // The two failures that are not fixable from an editor: no credential,
+        // and no app record. Both are console work, so hand over the exact
+        // walkthrough for THIS project instead of restating the error.
+        const msg = err instanceof Error ? err.message : String(err);
+        const g = guides(projectId);
+        if (/credential|asc_key|play_sa|api key|service account/i.test(msg)) {
+          return fail(
+            new UskanError(
+              `${msg}\n\nThis is set up in the browser, once per developer account. ` +
+                `Send the user here and they will be walked through it:\n` +
+                (platform === "ios" ? g.iosApiKey : g.androidServiceAccount),
+              400,
+            ),
+          );
+        }
+        if (
+          /app record|does not exist|no app with|not found in|create the app/i.test(
+            msg,
+          )
+        ) {
+          return fail(
+            new UskanError(
+              `${msg}\n\nNeither store lets us create the app entry over the API, so ` +
+                `this one screen is the user's to click through, once per app:\n` +
+                (platform === "ios" ? g.iosAppRecord : g.androidAppRecord),
+              400,
+            ),
+          );
+        }
+        throw err;
+      }
       const submission = unwrap<Record<string, unknown>>(data, "submission");
 
       return ok(
-        { submission, track: resolvedTrack, review: links(projectId) },
+        {
+          submission,
+          track: resolvedTrack,
+          review: links(projectId),
+          guides: guides(projectId),
+        },
         [
           `Submitted to ${platform} / ${resolvedTrack}.`,
           platform === "android"
@@ -1045,11 +1113,18 @@ server.registerTool(
         { blob: await fileBlob(abs), name: basename(abs) },
       );
 
-      return ok({ image: unwrap(data, "screenshot"), review: links(projectId) }, [
+      return ok(
+        {
+          image: unwrap(data, "screenshot"),
+          review: links(projectId),
+          studio: links(projectId).screenshots,
+        },
+        [
         `Added ${basename(abs)} to ${kind} (${locale ?? "en-US"}).`,
         "Show the user the screenshots link so they can see the set in context",
         "before publishing.",
-      ].join("\n"));
+        ].join("\n"),
+      );
     }),
 );
 
@@ -1290,7 +1365,10 @@ server.registerTool(
       }
       const note = lines.join("\n");
 
-      return ok({ ...data, review: links(projectId) }, note);
+      return ok(
+        { ...data, review: links(projectId), guides: guides(projectId) },
+        note,
+      );
     }),
 );
 
