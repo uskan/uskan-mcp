@@ -102,7 +102,7 @@ const stackEnum = z.enum(["expo", "rn", "flutter", "gradle", "native"]);
  * ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "uskan-mcp", version: "0.1.0" },
+  { name: "uskan-mcp", version: "0.2.0" },
   {
     capabilities: { tools: {} },
     instructions: [
@@ -124,7 +124,15 @@ const server = new McpServer(
       "  4. uskan_generate_listing     — AI store copy (costs credits)",
       "  5. uskan_save_listing         — persist the copy, per locale",
       "  6. uskan_prepare_questionnaires — Data safety + content rating drafts",
+      "  3b. uskan_build             — instead of 3, when a GitHub repo is connected",
       "  7. uskan_publish              — push the artifact to the store track",
+      "  8. uskan_check_submission     — where the review stands, when the user asks",
+      "",
+      "Store images: uskan_upload_store_image puts an existing PNG/JPEG into the",
+      "right store slot and validates its pixel size. If the user has no artwork,",
+      "point them at the screenshot studio link rather than trying to make one.",
+      "Play Data safety: uskan_file_data_safety sends the declaration to Google",
+      "directly, after the user has approved the summary.",
       "",
       "AI steps cost credits. Do not call them speculatively or in a retry loop.",
       "Always show generated store copy and questionnaire answers to the user for",
@@ -820,6 +828,327 @@ server.registerTool(
           "Track progress on the uskan dashboard and in the store console.",
         ].join("\n"),
       );
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 8. uskan_build
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_build",
+  {
+    title: "uskan: build the app on GitHub Actions",
+    description: [
+      "Build a signed release from the project's connected GitHub repository, so",
+      "the user does not have to run `flutter build appbundle`, `eas build` or an",
+      "Xcode archive themselves. The build runs in THEIR repo under GitHub Actions;",
+      "uskan injects the signing keys as repo secrets for that one run and never",
+      "receives the source.",
+      "",
+      "REQUIRES: the project was created with a connected GitHub repo, and the",
+      "signing credentials are stored on uskan.app (Android upload keystore for",
+      "Android, App Store Connect API key for iOS). If no repo is connected this",
+      "returns 409 — in that case the user builds locally and you call",
+      "uskan_upload_build instead.",
+      "",
+      "This returns as soon as the workflow is dispatched. Poll uskan_build_status",
+      "with the returned id; a cold Flutter or Xcode build takes 5-20 minutes.",
+      "When it reports success, the artifact is already attached to the project and",
+      "ready for uskan_publish.",
+    ].join("\n"),
+    inputSchema: {
+      projectId: z.string().trim().min(1).describe("uskan project id."),
+      platform: platformEnum.describe("Which build to run."),
+      ref: z
+        .string()
+        .trim()
+        .max(255)
+        .optional()
+        .describe("Branch or tag to build. Defaults to the project's stored branch."),
+      versionName: z
+        .string()
+        .trim()
+        .max(64)
+        .optional()
+        .describe("Marketing version, e.g. '1.4.0'. Read it from app.json / pubspec.yaml."),
+      versionCode: z
+        .string()
+        .trim()
+        .max(16)
+        .optional()
+        .describe("Android version code (integer as a string). Must increase every release."),
+      buildNumber: z
+        .string()
+        .trim()
+        .max(16)
+        .optional()
+        .describe("iOS CFBundleVersion. Must increase every upload to App Store Connect."),
+    },
+    annotations: { openWorldHint: true },
+  },
+  async ({ projectId, platform, ref, versionName, versionCode, buildNumber }) =>
+    guard(async () => {
+      const body: Record<string, unknown> = { projectId, platform };
+      if (ref) body.ref = ref;
+      if (versionName) body.versionName = versionName;
+      if (platform === "android" && versionCode) body.versionCode = versionCode;
+      if (platform === "ios" && buildNumber) body.buildNumber = buildNumber;
+
+      const data = await request<Record<string, unknown>>("/api/builds", {
+        method: "POST",
+        body,
+      });
+
+      return ok({ build: data, review: links(projectId) }, [
+        `Build dispatched for ${platform}. id: ${String(data.id ?? "unknown")}`,
+        "Poll uskan_build_status with that id. Do not poll faster than once every",
+        "30 seconds, and tell the user roughly how long builds take (5-20 minutes)",
+        "instead of sitting silent.",
+      ].join("\n"));
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 9. uskan_build_status
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_build_status",
+  {
+    title: "uskan: check a build",
+    description: [
+      "Status and log of a build started with uskan_build.",
+      "",
+      "status is one of: queued, running, success, failed, cancelled. On failure",
+      "the `logs` array says which step stopped it — read it and explain the cause",
+      "to the user rather than just repeating 'the build failed'. Common ones: a",
+      "version code that is not higher than the last release, a missing keystore",
+      "credential, or a compile error in the app itself (which is the user's to fix).",
+    ].join("\n"),
+    inputSchema: {
+      buildId: z.string().trim().min(1).describe("Build id returned by uskan_build."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ buildId }) =>
+    guard(async () => {
+      const data = await request<Record<string, unknown>>(
+        `/api/builds/${encodeURIComponent(buildId)}`,
+      );
+      const status = String(data.status ?? "unknown");
+      const note =
+        status === "success"
+          ? "Build finished. The artifact is attached to the project and ready for uskan_publish."
+          : status === "failed" || status === "cancelled"
+            ? `Build ${status}. Read the logs below and tell the user what actually stopped it.`
+            : `Build is ${status}. Wait at least 30 seconds before checking again.`;
+      return ok(data, note);
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 10. uskan_upload_store_image
+ * ------------------------------------------------------------------ */
+
+const imageKindEnum = z.enum([
+  "phoneScreenshots",
+  "sevenInchScreenshots",
+  "tenInchScreenshots",
+  "featureGraphic",
+  "icon",
+  "APP_IPHONE_67",
+  "APP_IPAD_PRO_3GEN_129",
+]);
+
+server.registerTool(
+  "uskan_upload_store_image",
+  {
+    title: "uskan: upload a store image",
+    description: [
+      "Upload one screenshot, feature graphic or store icon from disk into a",
+      "project's store assets. uskan reads the real pixel size of the file and",
+      "rejects anything the store would reject, so a failure here is a rejection",
+      "the user does not get later.",
+      "",
+      "The rules, which are worth checking BEFORE uploading:",
+      "  - Play app icon:      exactly 512 x 512",
+      "  - Play feature graphic: exactly 1024 x 500",
+      "  - Play screenshots:   each side 320-3840 px, never longer than 2:1, no",
+      "                        transparency, at least 2 of them",
+      "  - App Store iPhone:   1320 x 2868 or 1290 x 2796",
+      "  - App Store iPad:     2064 x 2752 or 2048 x 2732",
+      "",
+      "If the user has no artwork yet, do NOT try to generate it here: send them to",
+      "the screenshot studio link this tool returns, where raw device screenshots",
+      "get framed and exported at the right sizes.",
+    ].join("\n"),
+    inputSchema: {
+      projectId: z.string().trim().min(1).describe("uskan project id."),
+      filePath: z
+        .string()
+        .trim()
+        .min(1)
+        .describe("Path to a PNG or JPEG on this machine."),
+      platform: platformEnum.describe("Which store this image is for."),
+      kind: imageKindEnum.describe(
+        "Which slot it fills. Android: phoneScreenshots | sevenInchScreenshots | tenInchScreenshots | featureGraphic | icon. iOS: APP_IPHONE_67 | APP_IPAD_PRO_3GEN_129.",
+      ),
+      locale: z
+        .string()
+        .trim()
+        .max(16)
+        .optional()
+        .describe("Store locale, e.g. 'en-US' (default) or 'tr-TR'."),
+      sort: z
+        .number()
+        .int()
+        .min(0)
+        .max(9)
+        .optional()
+        .describe("Display order within the slot, 0 first. Screenshots are shown in this order."),
+    },
+    annotations: { openWorldHint: true },
+  },
+  async ({ projectId, filePath, platform, kind, locale, sort }) =>
+    guard(async () => {
+      const abs = resolve(filePath);
+      let info;
+      try {
+        info = await stat(abs);
+      } catch {
+        return fail(new UskanError(`No file at ${abs}.`, 404));
+      }
+      if (!info.isFile()) {
+        return fail(new UskanError(`${abs} is a directory, not an image.`, 400));
+      }
+      const ext = (abs.split(".").pop() || "").toLowerCase();
+      if (!["png", "jpg", "jpeg"].includes(ext)) {
+        return fail(
+          new UskanError(
+            `Store images must be PNG or JPEG, not ".${ext}". Convert it first.`,
+            400,
+          ),
+        );
+      }
+
+      const data = await upload(
+        "/api/screenshots",
+        {
+          projectId,
+          platform,
+          kind,
+          locale: locale ?? "en-US",
+          ...(sort === undefined ? {} : { sort: String(sort) }),
+        },
+        { blob: await fileBlob(abs), name: basename(abs) },
+      );
+
+      return ok({ image: unwrap(data, "screenshot"), review: links(projectId) }, [
+        `Added ${basename(abs)} to ${kind} (${locale ?? "en-US"}).`,
+        "Show the user the screenshots link so they can see the set in context",
+        "before publishing.",
+      ].join("\n"));
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 11. uskan_file_data_safety
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_file_data_safety",
+  {
+    title: "uskan: file the Play Data safety form",
+    description: [
+      "Send the Google Play Data safety declaration straight to Play, so the user",
+      "never opens that form. It takes the full Play CSV that",
+      "uskan_prepare_questionnaires produces (dataSafetyCsv in its result).",
+      "",
+      "The user is legally responsible for this declaration. ALWAYS show them the",
+      "human-readable summary from uskan_prepare_questionnaires and get an explicit",
+      "yes before calling this. Do not file a declaration you assembled from",
+      "guesswork about what the app collects.",
+      "",
+      "Filing applies immediately and independently of any release, so it can be",
+      "done before a build exists.",
+    ].join("\n"),
+    inputSchema: {
+      projectId: z.string().trim().min(1).describe("uskan project id."),
+      csv: z
+        .string()
+        .min(100)
+        .describe(
+          "The complete Play Data safety CSV, starting with the header 'Question ID (machine readable)'. Pass dataSafetyCsv from uskan_prepare_questionnaires verbatim.",
+        ),
+    },
+    annotations: { destructiveHint: true, openWorldHint: true },
+  },
+  async ({ projectId, csv }) =>
+    guard(async () => {
+      if (!csv.startsWith("Question ID (machine readable)")) {
+        return fail(
+          new UskanError(
+            "That is not a Play Data safety CSV. Use the dataSafetyCsv value from " +
+              "uskan_prepare_questionnaires exactly as returned, without reformatting it.",
+            400,
+          ),
+        );
+      }
+      const data = await request<Record<string, unknown>>("/api/data-safety/push", {
+        method: "POST",
+        body: { projectId, csv },
+      });
+      return ok(
+        { result: data, review: links(projectId) },
+        "Data safety filed with Google Play. It shows up in Play Console under App content.",
+      );
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 12. uskan_check_submission
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_check_submission",
+  {
+    title: "uskan: check a submission's review status",
+    description: [
+      "Ask the store where a submission stands and update uskan's record of it.",
+      "",
+      "Returns one of: processing, submitted, live, rejected, failed. Review times",
+      "are the store's, not ours: Apple is typically 24-48 hours, Google Play a few",
+      "hours to 7 days for a first release. Do not poll this in a loop — check when",
+      "the user asks, and tell them the expected wait instead.",
+      "",
+      "uskan does not and cannot guarantee approval: whether an app is accepted",
+      "depends entirely on the app's own design and content against each store's",
+      "review guidelines.",
+    ].join("\n"),
+    inputSchema: {
+      submissionId: z
+        .string()
+        .trim()
+        .min(1)
+        .describe("Submission id returned by uskan_publish."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ submissionId }) =>
+    guard(async () => {
+      const data = await request<Record<string, unknown>>("/api/submissions/status", {
+        method: "POST",
+        body: { submissionId },
+      });
+      const status = String(data.status ?? "unknown");
+      const note =
+        status === "live"
+          ? "The release is live on the store."
+          : status === "rejected"
+            ? "The store rejected it. The response below carries the store's reason; relay that to the user verbatim."
+            : `Status: ${status}. Reviews take the store's own time; do not poll repeatedly.`;
+      return ok(data, note);
     }),
 );
 

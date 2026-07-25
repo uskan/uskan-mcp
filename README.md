@@ -136,6 +136,11 @@ to the model, and is stripped out of error text.
 | `uskan_save_listing`           | free    | Persists approved copy for one locale (upsert).                        |
 | `uskan_prepare_questionnaires` | credits | Drafts Play Data safety (+ importable CSV) and IARC content rating.    |
 | `uskan_publish`                | free    | Pushes an artifact to a store track and opens a submission.            |
+| `uskan_build`                  | free    | Builds a signed release in your own repo via GitHub Actions.           |
+| `uskan_build_status`           | free    | Status and log of a build started with `uskan_build`.                  |
+| `uskan_upload_store_image`     | free    | Uploads a screenshot / feature graphic / icon, size-checked per store. |
+| `uskan_file_data_safety`       | free    | Files the Play Data safety declaration with Google directly.           |
+| `uskan_check_submission`       | free    | Asks the store where a submission stands in review.                    |
 
 Each tool's description is written for the agent, telling it which repo files to read
 instead of interrogating you — `expo.android.package` from `app.json`, `applicationId`
@@ -150,7 +155,10 @@ uskan_status
        └─ uskan_upload_build     (your signed release build)
             ├─ uskan_generate_listing → review with you → uskan_save_listing (per locale)
             ├─ uskan_prepare_questionnaires → review with you
-            └─ uskan_publish     (android: internal track by default)
+            ├─ uskan_file_data_safety  (after you approve the summary)
+            ├─ uskan_upload_store_image (icon, feature graphic, screenshots)
+            ├─ uskan_publish     (android: internal track by default)
+            └─ uskan_check_submission  (where the review stands)
 ```
 
 ### Example prompts
