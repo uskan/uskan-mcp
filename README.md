@@ -1,5 +1,7 @@
 # uskan-mcp
 
+[![npm](https://img.shields.io/npm/v/uskan-mcp)](https://www.npmjs.com/package/uskan-mcp) [![CI](https://github.com/uskan/uskan-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/uskan/uskan-mcp/actions/workflows/ci.yml)
+
 Publish your mobile app to the **App Store** and **Google Play** without leaving your editor.
 
 `uskan-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server that plugs
