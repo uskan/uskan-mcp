@@ -124,7 +124,7 @@ const stackEnum = z.enum(["expo", "rn", "flutter", "gradle", "native"]);
  * ------------------------------------------------------------------ */
 
 const server = new McpServer(
-  { name: "uskan-mcp", version: "0.4.0" },
+  { name: "uskan-mcp", version: "0.5.0" },
   {
     capabilities: { tools: {} },
     instructions: [
@@ -142,6 +142,7 @@ const server = new McpServer(
       "Normal end-to-end order:",
       "  1. uskan_status               — check the key works and see existing projects",
       "  2. uskan_create_project       — once per app (reuse the id afterwards)",
+      "  2b. uskan_manual_steps        — what the user must do in a browser, with links",
       "  3. uskan_upload_build         — the .aab / .ipa the user built",
       "  4. uskan_generate_listing     — AI store copy (costs credits)",
       "  5. uskan_save_listing         — persist the copy, per locale",
@@ -1368,6 +1369,125 @@ server.registerTool(
       return ok(
         { ...data, review: links(projectId), guides: guides(projectId) },
         note,
+      );
+    }),
+);
+
+/* ------------------------------------------------------------------ *
+ * 14. uskan_manual_steps
+ * ------------------------------------------------------------------ */
+
+server.registerTool(
+  "uskan_manual_steps",
+  {
+    title: "uskan: what only the user can do",
+    description: [
+      "The steps of a launch that no API can perform, for this project, with a",
+      "link to a walkthrough that shows each one with real screenshots.",
+      "",
+      "Call this EARLY — right after uskan_create_project — and again whenever a",
+      "publish fails for a setup reason. These steps take the user a few minutes",
+      "in a browser, and every one of them blocks publishing, so finding out about",
+      "them at the end is the worst possible time.",
+      "",
+      "Why they cannot be automated, so you can answer the user honestly:",
+      "  - The app record: neither store has a create-app endpoint. Apple's API",
+      "    can read apps but not make one; Google's can only change an app that",
+      "    already exists. It is one screen, once per app.",
+      "  - Store credentials: an API key has to be issued from inside the user's",
+      "    own account. On Google there is a second half people miss — the service",
+      "    account must also be INVITED into Play Console.",
+      "  - Apple's App Privacy answers: no API exists at all.",
+      "",
+      "Give the user the URLs as clickable links with one sentence each. Do not",
+      "paraphrase the steps from memory — the pages carry current screenshots and",
+      "the user's own package name.",
+    ].join("\n"),
+    inputSchema: {
+      projectId: z.string().trim().min(1).describe("uskan project id."),
+      platform: platformEnum
+        .optional()
+        .describe("Limit to one store. Omit to get both."),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  },
+  async ({ projectId, platform }) =>
+    guard(async () => {
+      const g = guides(projectId);
+
+      // What we can already tell: which credentials exist. Everything else
+      // lives inside the stores, where we cannot look without trying to publish.
+      let haveAsc = false;
+      let havePlay = false;
+      try {
+        const creds = await request<{ credentials: { type: string }[] }>(
+          `/api/credentials?projectId=${encodeURIComponent(projectId)}`,
+        );
+        for (const c of creds.credentials ?? []) {
+          if (c.type === "asc_key") haveAsc = true;
+          if (c.type === "play_sa") havePlay = true;
+        }
+      } catch {
+        // Listing is a convenience; the checklist is still worth returning.
+      }
+
+      const ios = [
+        {
+          step: "Get your App Store Connect API key",
+          done: haveAsc,
+          why: "uskan needs it to upload the build and write your listing. One key covers every app you ever publish.",
+          url: g.iosApiKey,
+        },
+        {
+          step: "Create the app record in App Store Connect",
+          done: null,
+          why: "Apple's API can read apps but cannot create one. Two screens, once per app.",
+          url: g.iosAppRecord,
+        },
+        {
+          step: "Fill in App Privacy",
+          done: null,
+          why: "Apple exposes no API for the privacy questions. uskan prepares the answers for you to copy.",
+          url: g.iosAppRecord,
+        },
+        {
+          step: "Send the version to App Review",
+          done: null,
+          why: "Runs after Apple finishes processing the build. You can do it from here with uskan_submit_ios_review, or in the browser.",
+          url: g.iosSubmitReview,
+        },
+      ];
+
+      const android = [
+        {
+          step: "Create a Play service account and invite it",
+          done: havePlay,
+          why: "Two halves in two different places. A key without the Play Console invitation authenticates fine and then cannot see your app.",
+          url: g.androidServiceAccount,
+        },
+        {
+          step: "Create the app record in Play Console",
+          done: null,
+          why: "The Play Developer API can only change an app that already exists. One screen, once per app.",
+          url: g.androidAppRecord,
+        },
+      ];
+
+      const steps =
+        platform === "ios"
+          ? { ios }
+          : platform === "android"
+            ? { android }
+            : { ios, android };
+
+      return ok(
+        { steps, guides: g },
+        [
+          "These are the parts of publishing that happen in the user's browser.",
+          "`done: true` means uskan already has it. `done: null` means we cannot",
+          "check from here — ask the user rather than assuming.",
+          "Send them the links; each page walks through the clicks with screenshots.",
+        ].join("\n"),
       );
     }),
 );

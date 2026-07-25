@@ -141,6 +141,7 @@ to the model, and is stripped out of error text.
 | `uskan_upload_store_image`     | free    | Uploads a screenshot / feature graphic / icon, size-checked per store. |
 | `uskan_file_data_safety`       | free    | Files the Play Data safety declaration with Google directly.           |
 | `uskan_submit_ios_review`      | free    | Attaches the processed build and sends the iOS version to App Review.  |
+| `uskan_manual_steps`           | free    | The steps only you can do, with links to screenshot walkthroughs.      |
 | `uskan_check_submission`       | free    | Asks the store where a submission stands in review.                    |
 
 Each tool's description is written for the agent, telling it which repo files to read
