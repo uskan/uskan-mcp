@@ -29,9 +29,15 @@ jobs:
       - run: npm run build
 
       # Fail early if the tag and package.json disagree.
-      - name: Check tag matches package version
-        if: startsWith(github.ref, 'refs/tags/v')
+      # Publishing is only ever allowed from a v* tag, and that tag must match
+      # package.json. Without this gate a manual (workflow_dispatch) run from any
+      # branch could publish unchecked code.
+      - name: Require a v* tag that matches package.json
         run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) echo "::error::publish only runs from a v* tag (got $GITHUB_REF)"; exit 1 ;;
+          esac
           TAG="${GITHUB_REF_NAME#v}"
           PKG=$(node -p "require('./package.json').version")
           echo "tag=$TAG package.json=$PKG"
