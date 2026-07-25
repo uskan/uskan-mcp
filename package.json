@@ -1,6 +1,6 @@
 {
   "name": "uskan-mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "MCP server that lets coding agents publish mobile apps to the App Store and Google Play through uskan.app, straight from the project folder.",
   "license": "MIT",
   "type": "module",
