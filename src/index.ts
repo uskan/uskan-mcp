@@ -49,6 +49,22 @@ function ok(payload: unknown, note?: string): ToolResult {
   return { content: [{ type: "text", text: redact(text) }] };
 }
 
+/**
+ * Deep links back into the dashboard. Text drafts can be reviewed in chat, but
+ * visual work (screenshots) and final checks belong in the browser, so tools
+ * hand the user a URL to look at what just happened.
+ */
+function links(projectId: string) {
+  const base = `${baseUrl().replace(/\/$/, "")}/dashboard/projects/${projectId}`;
+  return {
+    project: base,
+    storeText: `${base}/listing`,
+    screenshots: `${base}/screenshots`,
+    storeForms: `${base}/questionnaires`,
+    publish: `${base}/publish`,
+  };
+}
+
 /** Failure result. Tools return errors as content so the agent can read + recover. */
 function fail(err: unknown): ToolResult {
   const message =
@@ -264,7 +280,7 @@ server.registerTool(
 
       const project = unwrap<Record<string, unknown>>(data, "project");
       return ok(
-        { project },
+        { project, review: links(String(project.id)) },
         `Project created. Use projectId "${String(project.id)}" for every following uskan call.`,
       );
     }),
@@ -417,7 +433,10 @@ server.registerTool(
         );
       }
 
-      return ok({ artifact }, notes.join("\n"));
+      return ok(
+        { artifact, review: links(projectId) },
+        notes.join("\n"),
+      );
     }),
 );
 
@@ -505,9 +524,18 @@ server.registerTool(
       );
 
       return ok(
-        { listings: unwrap(data.result, "listings"), price: data.price, balance: data.balance },
-        "Draft copy generated (credits charged). Show it to the user for review, " +
-          "then persist the approved text per locale with uskan_save_listing. " +
+        {
+          listings: unwrap(data.result, "listings"),
+          price: data.price,
+          balance: data.balance,
+          review: links(projectId),
+        },
+        "Draft copy generated (credits charged). Show the full text to the user for " +
+          "review before saving; they may want wording changes or extra locales. " +
+          "Then persist the approved text per locale with uskan_save_listing. " +
+          "The review.storeText link opens the same text in the browser, side by side " +
+          "per locale with the store character limits. Screenshots are visual work: " +
+          "point the user at review.screenshots instead of trying to make them here. " +
           "Check length limits: Play title 30 chars, App Store title 30 / subtitle 30 / keywords 100.",
       );
     }),
@@ -564,7 +592,7 @@ server.registerTool(
     guard(async () => {
       const data = await request("/api/listings", { method: "PUT", body: args });
       return ok(
-        { listing: unwrap(data, "listing") },
+        { listing: unwrap(data, "listing"), review: links(args.projectId) },
         `Saved listing for ${args.locale}. Repeat for each remaining locale.`,
       );
     }),
@@ -708,6 +736,7 @@ server.registerTool(
           contentRating: contentRating?.result ?? null,
           contentRatingError,
           balance: contentRating?.balance ?? dataSafety.balance,
+          review: links(projectId),
         },
         notes.join("\n"),
       );
@@ -782,7 +811,7 @@ server.registerTool(
       const submission = unwrap<Record<string, unknown>>(data, "submission");
 
       return ok(
-        { submission, track: resolvedTrack },
+        { submission, track: resolvedTrack, review: links(projectId) },
         [
           `Submitted to ${platform} / ${resolvedTrack}.`,
           platform === "android"
