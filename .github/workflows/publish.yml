@@ -43,6 +43,25 @@ jobs:
           echo "tag=$TAG package.json=$PKG"
           [ "$TAG" = "$PKG" ] || { echo "::error::tag $TAG != package.json $PKG"; exit 1; }
 
-      - run: npm publish --provenance --access public
+      # Publish. npm prefers Trusted Publishing (OIDC) when the package has a
+      # trusted publisher configured on npmjs.com, and falls back to NPM_TOKEN
+      # otherwise. Both paths are kept on purpose: the token is the only thing
+      # here with an expiry date, and a release should not fail on the day it
+      # lapses.
+      - name: Publish
+        id: publish
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # A failed publish is almost always the token, and the npm error for that
+      # is a bare E401. Say what to actually do.
+      - name: Explain an auth failure
+        if: failure() && steps.publish.outcome == 'failure'
+        run: |
+          echo "::error::If this failed with E401/E403, the NPM_TOKEN has most likely expired."
+          echo "::error::Fix permanently: npmjs.com -> uskan-mcp -> Settings -> Trusted Publisher"
+          echo "::error::  -> GitHub Actions, repo uskan/uskan-mcp, workflow publish.yml"
+          echo "::error::Then no token is needed at all. Temporary fix: regenerate a granular"
+          echo "::error::access token and update the NPM_TOKEN repo secret."
+          exit 1
